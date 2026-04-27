@@ -18,6 +18,8 @@ services:
       - HNG-nginx-logs:/var/log/nginx
     depends_on:
       - nextcloud
+    links:
+      - nextcloud
 
   detector:
     build: ./detector
