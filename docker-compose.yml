@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  nextcloud:
+    image: kefaslungu/hng-nextcloud
+    restart: unless-stopped
+    volumes:
+      - nextcloud_data:/var/www/html
+      - HNG-nginx-logs:/var/log/nginx:ro
+    networks:
+      - hng_net
+
+  nginx:
+    image: nginx:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - HNG-nginx-logs:/var/log/nginx
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - nextcloud
+    networks:
+      - hng_net
+
+  detector:
+    build: ./detector
+    restart: unless-stopped
+    network_mode: "host"
+    privileged: true
+    volumes:
+      - HNG-nginx-logs:/var/log/nginx:ro
+      - detector_logs:/var/log/detector
+    depends_on:
+      - nginx
+
+volumes:
+  nextcloud_data:
+  HNG-nginx-logs:
+  detector_logs:
+
+networks:
+  hng_net:

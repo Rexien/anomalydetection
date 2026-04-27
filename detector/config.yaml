@@ -1,0 +1,29 @@
+# ── Anomaly Detection Engine Configuration ──────────────────────
+# All thresholds are configurable here. No hardcoded values in code.
+
+slack_webhook_url: "YOUR_SLACK_WEBHOOK_URL_HERE"
+
+log_path: "/var/log/nginx/hng-access.log"
+audit_log_path: "/var/log/detector/audit.log"
+dashboard_port: 8080
+
+thresholds:
+  zscore: 3.0                      # Z-score threshold for anomaly detection
+  rate_multiplier: 5.0             # Flag if rate > N * baseline_mean
+  error_surge_multiplier: 3.0     # Tighten thresholds if error rate > N * baseline_error_rate
+  sliding_window_seconds: 60      # Deque window size in seconds
+  baseline_window_minutes: 30     # Rolling baseline window in minutes
+  baseline_recalc_seconds: 60     # Recalculate baseline every N seconds
+
+# Ban durations in seconds (escalating backoff)
+# 1st offense: 10 min, 2nd: 30 min, 3rd: 2 hours, 4th+: permanent
+ban_durations:
+  - 600
+  - 1800
+  - 7200
+
+# IPs that should never be banned
+whitelist:
+  - "127.0.0.1"
+  - "::1"
+  - "10.0.0.0/8"
