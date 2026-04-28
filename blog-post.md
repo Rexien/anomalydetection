@@ -1,153 +1,65 @@
-# How I Built a Real-Time DDoS Detection Engine for a Cloud Platform
+I Built a DDoS Detection Tool From Scratch — Here's How It Works
 
-## Introduction
+If someone sent thousands of fake requests to your website every second, how would you stop them?
 
-As a DevSecOps Engineer at a fast-growing cloud storage company powered by Nextcloud, I was tasked with building a real-time anomaly detection engine after a wave of suspicious activity hit our infrastructure. The system needed to monitor live HTTP traffic, learn what "normal" looks like, detect spikes that deviate from the baseline, and automatically block offending IPs — all without using any third-party rate-limiting libraries.
+I was tasked with building an anomaly detection engine — a tool that watches web traffic in real time, learns what "normal" looks like, and automatically blocks attackers. No third-party security libraries allowed. Just Python, some math, and Linux networking.
 
-In this post, I'll walk through how I designed and built the system from scratch using Python, Docker Compose, iptables, and a little bit of math.
 
----
+What It Does and Why It Matters
 
-## The Architecture
+I'm protecting a Nextcloud cloud storage platform sitting behind an Nginx reverse proxy. Nginx logs every request in JSON format. My Python daemon reads these logs in real time and does four things: watches every HTTP request, learns normal traffic patterns over time, detects anomalies using statistics, and blocks attackers via iptables while alerting the team on Slack.
 
-The system runs as a Docker Compose stack with three services:
+[ADD ARCHITECTURE DIAGRAM IMAGE HERE]
 
-1. **Nextcloud** (`kefaslungu/hng-nextcloud`) — the cloud storage platform users interact with.
-2. **Nginx** — a reverse proxy that sits in front of Nextcloud, writing every request as a JSON-formatted access log to a shared Docker volume (`HNG-nginx-logs`).
-3. **Detector Daemon** — a custom Python service that reads the logs in real time, computes traffic baselines, detects anomalies, blocks IPs via `iptables`, sends Slack alerts, and serves a live metrics dashboard.
 
-![Architecture Diagram](docs/architecture.png)
+How the Sliding Window Works
 
-The key design decision was keeping the detector on the **host network** (`network_mode: host`) so it has direct access to `iptables` for blocking traffic at the kernel level. This means bans take effect instantly — no proxy-level filtering needed.
+To measure "how many requests are happening right now," I use a sliding window built on Python's collections.deque (a double-ended queue).
 
----
+The concept is simple: every time a request comes in, I append its timestamp to the right side of the deque. Then I check the left side — if those timestamps are older than 60 seconds, I pop them off. What remains is exactly how many requests happened in the last minute. The current rate is just len(window) / 60.
 
-## How the Sliding Window Works
+Deques make this O(1) — adding and removing from either end takes constant time, so it stays fast even under heavy load.
 
-The core of the detection engine is two `collections.deque` instances that implement a **60-second sliding window**:
+I maintain a global window for all traffic, plus a per-IP dictionary of individual windows. This lets me detect both server-wide floods and single-IP attacks.
 
-- **Global window**: tracks timestamps of ALL incoming requests.
-- **Per-IP windows**: a `dict[str, deque]` mapping each source IP to its own timestamp deque.
 
-On every log line:
+How the Baseline Learns From Traffic
 
-```python
-global_window.append(now)
-while global_window[0] < now - 60:
-    global_window.popleft()
-rate = len(global_window) / 60
-```
+Is 50 requests per second a lot? Depends on your server. My baseline manager calculates the mean and standard deviation of traffic every 60 seconds using a 30-minute rolling window.
 
-This gives us O(1) amortized operations — each timestamp is appended once and popped once. No sorting, no copying, no external libraries.
+It's also time-aware — traffic at 3 AM differs from 3 PM, so it keeps per-hour statistics and prefers the current hour's data when it has enough samples.
 
----
+And it enforces floor values (mean of at least 1.0, standard deviation of at least 0.5) to prevent false alarms during quiet periods. Without these floors, a server with zero traffic would flag any single request as an anomaly.
 
-## The Rolling Baseline
 
-Knowing the *current* request rate isn't enough. We need to know what "normal" looks like. The baseline manager maintains a **30-minute rolling window** that recalculates every 60 seconds:
+How the Detection Logic Makes a Decision
 
-| Parameter | Value |
-|-----------|-------|
-| Window size | 30 minutes |
-| Recalculation interval | 60 seconds |
-| Per-hour slots | Yes (time-of-day awareness) |
-| Floor values | mean ≥ 1.0 req/s, stddev ≥ 0.5 |
+An IP gets flagged if either of two conditions fires.
 
-The floor values are critical — without them, a server with zero traffic would have a mean of 0 and stddev of 0, making *any* request an "anomaly." The floor ensures the system doesn't panic over legitimate early traffic.
+Z-score greater than 3.0 — the request rate is more than 3 standard deviations above the mean. Statistically, that puts it in the top 0.1% of expected behavior. The formula is (current_rate minus mean) divided by stddev.
 
----
+Rate greater than 5 times the mean — a simple multiplier catch for cases where the standard deviation is unusually high.
 
-## Anomaly Detection Logic
+If an IP generates excessive 4xx/5xx errors (like failed login attempts), thresholds tighten automatically to catch credential stuffing attacks that would slip under normal thresholds.
 
-An IP gets flagged if **either** of these conditions fires:
 
-1. **Z-score > 3.0**: `(rate - mean) / stddev > 3.0`
-2. **Rate multiplier > 5×**: `rate > 5 × mean`
+How iptables Blocks an IP
 
-There's also an **error surge** mechanism: if an IP's 4xx/5xx error rate exceeds 3× the baseline error rate, thresholds are tightened (z-score drops to 1.5, multiplier to 2×). This catches low-rate but high-error attackers like credential stuffers.
+When the detector flags an IP, I add a kernel-level firewall rule using iptables. The command inserts a DROP rule into the DOCKER-USER chain for that specific source IP. This silently discards all packets from the attacker at the kernel level — no response, no connection, nothing. It's instant and uses almost no resources.
 
----
+To unban, I simply delete the rule. Bans follow a tiered schedule: first offense is 10 minutes, second is 30 minutes, third is 2 hours, and after that it's permanent. Every ban and unban sends a Slack alert with the IP address, trigger condition, current rate, baseline comparison, and ban duration.
 
-## Blocking and Auto-Unban
 
-When an IP is flagged, the daemon:
-1. Adds a `DROP` rule to the `DOCKER-USER` iptables chain.
-2. Sends a Slack alert within 10 seconds containing the IP, condition, rate, baseline, and ban duration.
-3. Logs the action to an audit file.
+The Result
 
-The auto-unban follows a **tiered backoff schedule**:
+I simulated an attack with Apache Benchmark, firing 500 requests from 50 concurrent connections. Within seconds, the detector flagged the traffic with a z-score of 3.03 (just above the 3.0 threshold), banned the source IP, fired a Slack alert with full context, and displayed the ban on the live dashboard with a countdown timer. After 10 minutes, the auto-unbanner lifted the ban and sent a confirmation to Slack. The full detection-to-ban-to-unban cycle worked exactly as designed.
 
-| Offense | Ban Duration |
-|---------|-------------|
-| 1st | 10 minutes |
-| 2nd | 30 minutes |
-| 3rd | 2 hours |
-| 4th+ | Permanent |
+[ADD DASHBOARD SCREENSHOT HERE]
+[ADD SLACK NOTIFICATIONS SCREENSHOT HERE]
 
-If the IP behaves after unbanning, an "IP UNBANNED" Slack notification is sent.
 
----
+Links
 
-## The Live Dashboard
-
-The detector serves a FastAPI-based dashboard on port 8080 that auto-refreshes every 3 seconds. It shows:
-
-- Global request rate (req/s)
-- Total requests processed
-- Number of currently banned IPs (with countdown timers)
-- Effective mean and standard deviation from the baseline
-- Top 10 source IPs ranked by request rate
-- CPU and memory usage
-- Engine uptime
-
-The dashboard is served at `zamistage3.duckdns.org` via an Nginx reverse proxy, while Nextcloud is accessed directly by the server's IP.
-
----
-
-## Testing It
-
-I used Apache Benchmark to simulate a DDoS attack:
-
-```bash
-ab -n 500 -c 50 http://localhost/
-```
-
-Within seconds, the detector:
-1. Flagged a global rate anomaly (`zscore=3.03 > 3.0`)
-2. Banned the source IP with an `iptables DROP` rule
-3. Sent a Slack alert with full context
-4. Displayed the ban on the live dashboard
-
-After 10 minutes, the auto-unbanner lifted the ban and sent a confirmation to Slack.
-
----
-
-## Lessons Learned
-
-1. **Podman ≠ Docker** — My Oracle Cloud VPS shipped with Podman, which emulates Docker but has broken CNI networking. I spent hours debugging `CNI network not found` errors before manually creating the CNI config files.
-
-2. **Dynamic IPs in containers** — Podman doesn't have DNS resolution on its default bridge network. I had to use a startup script that discovers the Nextcloud container's IP at boot and patches the Nginx config.
-
-3. **Floor values matter** — Without minimum values for the baseline mean (1.0) and stddev (0.5), the system would flag any traffic on a quiet server as anomalous.
-
-4. **GitHub secret scanning** — GitHub blocked my push because my `config.yaml` contained a Slack webhook URL. I had to use a placeholder and inject the real URL at deploy time.
-
----
-
-## Tech Stack
-
-- **Language**: Python 3.11
-- **Web Framework**: FastAPI (dashboard)
-- **Containers**: Docker Compose (via Podman)
-- **Reverse Proxy**: Nginx (JSON access logs)
-- **Blocking**: iptables (DOCKER-USER chain)
-- **Alerts**: Slack Webhooks
-- **Data Structures**: `collections.deque` for O(1) sliding windows
-
----
-
-## Links
-
-- **GitHub**: [github.com/Rexien/anomalydetection](https://github.com/Rexien/anomalydetection)
-- **Dashboard**: [zamistage3.duckdns.org](http://zamistage3.duckdns.org)
-- **Nextcloud**: [92.4.137.99](http://92.4.137.99)
+GitHub: https://github.com/Rexien/anomalydetection
+Live Dashboard: http://zamistage3.duckdns.org
+Nextcloud: http://92.4.137.99
