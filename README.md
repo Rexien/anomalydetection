@@ -6,9 +6,9 @@ A real-time anomaly detection daemon that monitors HTTP traffic to a Nextcloud i
 
 | Resource | URL |
 |----------|-----|
-| **Metrics Dashboard** | `https://YOUR_DOMAIN` |
-| **Server IP** | `YOUR_SERVER_IP` |
-| **Blog Post** | `YOUR_BLOG_URL` |
+| **Metrics Dashboard** | `http://zamistage3.duckdns.org` |
+| **Server IP** | `92.4.137.99` |
+| **Blog Post** | *(see below)* |
 
 ---
 
@@ -119,7 +119,7 @@ curl -fsSL https://get.docker.com | sh
 apt install -y docker-compose-plugin
 
 # 3. Clone the repo
-git clone https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git clone https://github.com/Rexien/anomalydetection.git
 cd YOUR_REPO
 
 # 4. Update config
@@ -185,7 +185,7 @@ README.md           # This file
 
 ## GitHub Repo
 
-🔗 `https://github.com/YOUR_USERNAME/YOUR_REPO`
+🔗 `https://github.com/Rexien/anomalydetection`
 
 ---
 
