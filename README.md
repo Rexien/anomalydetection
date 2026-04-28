@@ -8,7 +8,7 @@ A real-time anomaly detection daemon that monitors HTTP traffic to a Nextcloud i
 |----------|-----|
 | **Metrics Dashboard** | `http://zamistage3.duckdns.org` |
 | **Server IP** | `92.4.137.99` |
-| **Blog Post** | *(see below)* |
+| **Blog Post** | [Medium](https://medium.com/@proyo2k/i-built-a-ddos-detection-tool-from-scratch-hng-bf34eddf528a) |
 
 ---
 
@@ -191,4 +191,4 @@ README.md           # This file
 
 ## Blog Post
 
-🔗 `YOUR_BLOG_URL`
+🔗 [I Built a DDoS Detection Tool From Scratch](https://medium.com/@proyo2k/i-built-a-ddos-detection-tool-from-scratch-hng-bf34eddf528a)
